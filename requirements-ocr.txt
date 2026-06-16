@@ -1,0 +1,8 @@
+# Run OCR in a separate Python 3.11 environment.
+paddlepaddle==3.2.2
+paddleocr==3.7.0
+numpy==2.3.5
+pymupdf==1.26.7
+python-docx==1.2.0
+openpyxl==3.1.5
+pywin32==311; platform_system == "Windows"
