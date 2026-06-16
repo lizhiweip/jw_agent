@@ -79,10 +79,10 @@ Streamlit 页面展示与引用展开
 ├── requirements-ocr.txt             # OCR 环境依赖
 ├── .env.example                     # 环境变量模板
 ├── docs/images/                     # README 展示图片
-├── knowledge_base_case/.gitkeep     # 案例库占位，不提交真实数据
-├── knowledge_base_lp/.gitkeep       # 法规库占位，不提交真实数据
-├── knowledge_base_guidance/.gitkeep # 办案规范库占位，不提交真实数据
-└── knowledge_base_qa/.gitkeep       # 业务问答库占位，不提交真实数据
+├── knowledge_base_case/.gitkeep     # 案例库
+├── knowledge_base_lp/.gitkeep       # 法规库
+├── knowledge_base_guidance/.gitkeep # 办案规
+└── knowledge_base_qa/.gitkeep       # 业务问答库
 ```
 
 ## 环境准备
@@ -130,7 +130,6 @@ QA_RECORDS_PATH=./knowledge_base_qa/records
 DATABASE_URL=sqlite:///./data/user.db
 ```
 
-`.env` 已被 `.gitignore` 忽略，请不要上传真实 API Key。
 
 ## 数据准备
 
@@ -233,35 +232,6 @@ nohup python -m streamlit run streamlit_app.py \
   > streamlit.log 2>&1 &
 ```
 
-## 不应提交到 GitHub 的内容
-
-以下内容均已在 `.gitignore` 中排除：
-
-```text
-.env
-.venv/
-.ocr_env/
-data/
-data_import_manifests/
-knowledge_base_case/*
-knowledge_base_lp/*
-knowledge_base_guidance/*
-knowledge_base_qa/*
-law_faiss_*/
-model_cache/
-*.zip
-*.log
-*.db
-*.pkl
-```
-
-只保留各知识库目录下的 `.gitkeep`，用于展示目录结构。
-
-## 安全提醒
-
-- 不要将内部文件、工作秘密、真实案例、API Key、数据库文件提交到公开仓库。
-- 生产环境应配置真实用户认证、权限控制、访问审计和内网隔离。
-- 本项目输出仅用于辅助检索和业务研判，不构成正式法律意见或处分处理依据。
 
 ## License
 
