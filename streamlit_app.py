@@ -1034,11 +1034,183 @@ def _read_kb_file_preview(path: Path, max_chars: int = 12000) -> str:
 def _collect_kb_files(source_dir: Path) -> list[tuple[str, Path]]:
     files: list[tuple[str, Path]] = []
     if source_dir.exists():
-        files.extend(("入库文件", path) for path in source_dir.rglob("*") if path.is_file())
-    upload_dir = source_dir.parent / "uploads"
+        files.extend(
+            ("入库文件", path)
+            for path in source_dir.rglob("*")
+            if path.is_file() and "_uploads" not in path.relative_to(source_dir).parts
+        )
+    upload_dir = source_dir / "_uploads"
     if upload_dir.exists():
         files.extend(("原始上传", path) for path in upload_dir.rglob("*") if path.is_file())
     return sorted(files, key=lambda item: item[1].stat().st_mtime, reverse=True)
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _iter_source_files(source_dir: Path) -> list[Path]:
+    if not source_dir.exists():
+        return []
+    return [
+        path
+        for path in source_dir.rglob("*")
+        if path.is_file() and "_uploads" not in path.relative_to(source_dir).parts
+    ]
+
+
+def _read_json_file(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _record_matches_upload(record: dict, upload_name: str) -> bool:
+    if not isinstance(record, dict):
+        return False
+    candidates = [
+        record.get("source_file"),
+        record.get("question_file"),
+        record.get("answer_file"),
+    ]
+    return any(str(item or "").strip() == upload_name for item in candidates)
+
+
+def _find_derived_files_for_upload(source_dir: Path, upload_path: Path) -> list[Path]:
+    upload_name = upload_path.name
+    upload_stem = _original_upload_stem(upload_path)
+    derived: list[Path] = []
+    for path in _iter_source_files(source_dir):
+        if path == upload_path:
+            continue
+        if path.suffix.lower() == ".json":
+            data = _read_json_file(path)
+            records = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+            if any(_record_matches_upload(record, upload_name) for record in records):
+                derived.append(path)
+                continue
+        if path.suffix.lower() == ".txt":
+            if path.stem == upload_stem or path.stem.startswith(f"{upload_stem}_"):
+                derived.append(path)
+    return derived
+
+
+def _source_upload_name_for_entry(path: Path) -> str:
+    if path.suffix.lower() != ".json":
+        return ""
+    data = _read_json_file(path)
+    record = data[0] if isinstance(data, list) and data else data
+    if not isinstance(record, dict):
+        return ""
+    return str(
+        record.get("source_file")
+        or record.get("question_file")
+        or record.get("answer_file")
+        or ""
+    ).strip()
+
+
+def _delete_single_line(path: Path, line_index: int) -> bool:
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if line_index < 0 or line_index >= len(lines):
+        return False
+    del lines[line_index]
+    if lines:
+        path.write_text("\n".join(lines), encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+    return True
+
+
+def _get_rebuild_embedding():
+    try:
+        base_agent = load_global_agent(st.session_state.get("private_kb_scope", ""))
+        return getattr(getattr(base_agent, "case_rag", None), "embedding_model", None)
+    except Exception:
+        return None
+
+
+def _rebuild_kb_index(scope: str, private_space: str, knowledge_type: str) -> int:
+    source_dir, index_dir = _get_target_paths(scope, private_space, knowledge_type)
+    if index_dir.exists():
+        shutil.rmtree(index_dir)
+    source_files = _iter_source_files(source_dir)
+    if not source_files:
+        load_global_agent.clear()
+        return 0
+
+    index_dir.mkdir(parents=True, exist_ok=True)
+    rag = LegalRAGapi(
+        db_path=str(index_dir),
+        source_dir=str(source_dir),
+        vector_weight=0.3 if knowledge_type != "业务题库" else 0.4,
+        bm25_weight=0.7 if knowledge_type != "业务题库" else 0.6,
+        embedding_model=_get_rebuild_embedding(),
+    )
+
+    type_key = KNOWLEDGE_TYPE_CONFIG[knowledge_type]["key"]
+    added = 0
+    if type_key in ("lp", "case"):
+        for path in source_files:
+            if path.suffix.lower() in {".txt", ".json", ".doc", ".docx", ".pdf"}:
+                rag.add_file_documents(str(path), save_to_disk=False)
+                added += 1
+    elif type_key == "guidance":
+        texts: list[str] = []
+        pids: list[str] = []
+        _append_guidance_record_texts([p for p in source_files if p.suffix.lower() == ".json"], texts, pids)
+        if texts:
+            rag.add_documents(texts, pids=pids, save_to_disk=False)
+            added = len(texts)
+    else:
+        texts: list[str] = []
+        pids: list[str] = []
+        for path in source_files:
+            if path.suffix.lower() != ".json":
+                continue
+            data = _read_json_file(path)
+            records = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                pid = str(record.get("pid") or path.stem)
+                question = str(record.get("question") or "").strip()
+                answer = str(record.get("answer") or "").strip()
+                title = str(record.get("title") or path.stem).strip()
+                if question:
+                    texts.append(f"【业务问答题目】{title}\n【题目】{question}")
+                    pids.append(pid)
+                if answer:
+                    texts.append(f"【业务问答参考答案】{title}\n【参考答案】{answer}")
+                    pids.append(pid)
+        if texts:
+            rag.add_documents(texts, pids=pids, save_to_disk=False)
+            added = len(texts)
+
+    if getattr(rag, "vector_db", None) is not None:
+        rag.save_vector_db()
+        rag.bm25_retriever.save_index()
+    load_global_agent.clear()
+    return added
+
+
+def _delete_private_knowledge_space(space: str) -> None:
+    safe_space = _safe_space_name(space)
+    if not safe_space:
+        raise ValueError("请选择要删除的私有知识库")
+    source_root = PRIVATE_KB_ROOT / safe_space
+    index_root = PRIVATE_INDEX_ROOT / _safe_index_space_name(safe_space)
+    for target, root in ((source_root, PRIVATE_KB_ROOT), (index_root, PRIVATE_INDEX_ROOT)):
+        if target.exists() and _path_is_under(target, root):
+            shutil.rmtree(target)
+    if st.session_state.get("private_kb_scope") == safe_space:
+        st.session_state.private_kb_scope = ""
+    load_global_agent.clear()
 
 
 def render_knowledge_view_page():
@@ -1102,6 +1274,61 @@ def render_knowledge_view_page():
     with st.expander("目录信息", expanded=False):
         st.code(f"源文件目录：{source_dir}\n索引目录：{index_dir}")
 
+    with st.expander("管理当前层级", expanded=False):
+        st.caption("在当前查看页直接删除。删除后会自动清理或重建对应索引。")
+
+        if view_scope == "私有知识库":
+            st.warning("删除整个私有知识库会清空该私有库下所有类型的源文件、原始上传文件和向量索引。")
+            confirm_space_delete = st.checkbox(
+                f"确认删除整个私有知识库：{view_private_space}",
+                key=f"view_confirm_delete_private_space_{view_private_space}",
+            )
+            if st.button(
+                "删除整个私有知识库",
+                type="secondary",
+                disabled=not confirm_space_delete,
+                key=f"view_delete_private_space_{view_private_space}",
+                use_container_width=True,
+            ):
+                try:
+                    _delete_private_knowledge_space(view_private_space)
+                    st.success("整个私有知识库已删除。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"删除失败：{e}")
+                    with st.expander("查看错误详情"):
+                        st.code(traceback.format_exc())
+        else:
+            st.info("公共知识库不支持整库删除，可删除当前类型、文件或单条内容。")
+
+        confirm_type_delete = st.checkbox(
+            f"确认删除当前{view_scope}的【{view_type}】全部内容",
+            key=f"view_confirm_delete_type_{view_scope}_{view_private_space}_{view_type}",
+        )
+        if st.button(
+            f"删除当前类型全部内容：{view_type}",
+            type="secondary",
+            disabled=not confirm_type_delete or not source_dir.exists(),
+            key=f"view_delete_type_{view_scope}_{view_private_space}_{view_type}",
+            use_container_width=True,
+        ):
+            try:
+                if source_dir.exists():
+                    if view_scope == "私有知识库" and not _path_is_under(source_dir, PRIVATE_KB_ROOT):
+                        raise ValueError("私有知识库路径异常，已取消删除。")
+                    if view_scope == "公共知识库" and not _path_is_under(source_dir, Path(os.getcwd())):
+                        raise ValueError("公共知识库路径异常，已取消删除。")
+                    shutil.rmtree(source_dir)
+                if index_dir.exists():
+                    shutil.rmtree(index_dir)
+                load_global_agent.clear()
+                st.success(f"已删除当前类型全部内容：{view_type}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"删除失败：{e}")
+                with st.expander("查看错误详情"):
+                    st.code(traceback.format_exc())
+
     if not files:
         st.info("该知识库暂无文件。")
         return
@@ -1154,6 +1381,159 @@ def render_knowledge_view_page():
             st.code(preview, language="json")
         else:
             st.text_area("内容预览", preview, height=520, disabled=True)
+
+        st.divider()
+        st.markdown("#### 文件管理")
+        st.caption("删除当前文件、整个上传文件，或在法规 TXT 中删除单条内容。")
+
+        delete_key_base = uuid.uuid5(uuid.NAMESPACE_URL, str(selected_path.resolve())).hex[:12]
+        source_upload_name = _source_upload_name_for_entry(selected_path)
+        upload_dir = source_dir / "_uploads"
+        related_upload = upload_dir / source_upload_name if source_upload_name else None
+        derived_files = (
+            _find_derived_files_for_upload(source_dir, selected_path)
+            if selected_group == "原始上传"
+            else (
+                _find_derived_files_for_upload(source_dir, related_upload)
+                if related_upload and related_upload.exists()
+                else []
+            )
+        )
+
+        delete_file_col, delete_upload_col = st.columns(2)
+        with delete_file_col:
+            confirm_file_delete = st.checkbox(
+                "确认删除当前文件/记录",
+                key=f"view_confirm_delete_file_{delete_key_base}",
+            )
+            if st.button(
+                "删除当前文件/记录",
+                type="secondary",
+                disabled=not confirm_file_delete,
+                key=f"view_delete_file_{delete_key_base}",
+                use_container_width=True,
+            ):
+                try:
+                    deleted, rebuilt = _delete_path_and_rebuild(
+                        selected_path, source_dir, view_scope, view_private_space, view_type
+                    )
+                    st.success(f"已删除 {deleted} 个文件/记录，并重建索引（处理 {rebuilt} 个对象）。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"删除失败：{e}")
+                    with st.expander("查看错误详情"):
+                        st.code(traceback.format_exc())
+
+        with delete_upload_col:
+            target_count = len(derived_files) + (1 if selected_group == "原始上传" else 0)
+            confirm_upload_delete = st.checkbox(
+                "确认删除整个上传文件及派生内容",
+                key=f"view_confirm_delete_upload_{delete_key_base}",
+            )
+            if st.button(
+                f"删除整个上传文件及派生内容（{target_count} 个）",
+                type="secondary",
+                disabled=not confirm_upload_delete or target_count == 0,
+                key=f"view_delete_upload_{delete_key_base}",
+                use_container_width=True,
+            ):
+                try:
+                    deleted, rebuilt = _delete_upload_group_and_rebuild(
+                        selected_group, selected_path, source_dir, view_scope, view_private_space, view_type
+                    )
+                    st.success(f"已删除 {deleted} 个相关文件，并重建索引（处理 {rebuilt} 个对象）。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"删除失败：{e}")
+                    with st.expander("查看错误详情"):
+                        st.code(traceback.format_exc())
+
+        if derived_files:
+            with st.expander("派生入库文件", expanded=False):
+                st.write("\n".join(f"- {path.name}" for path in derived_files))
+
+        if selected_group == "入库文件" and selected_path.suffix.lower() == ".txt":
+            with st.expander("单条内容管理", expanded=False):
+                lines = selected_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                if lines:
+                    line_options = [
+                        f"{idx + 1}. {line[:100]}{'...' if len(line) > 100 else ''}"
+                        for idx, line in enumerate(lines)
+                    ]
+                    selected_line_label = st.selectbox(
+                        "选择条目",
+                        options=line_options,
+                        key=f"view_delete_line_select_{delete_key_base}",
+                    )
+                    selected_line_index = line_options.index(selected_line_label)
+                    confirm_line_delete = st.checkbox(
+                        "确认删除所选条目",
+                        key=f"view_confirm_delete_line_{delete_key_base}",
+                    )
+                    if st.button(
+                        "删除所选条目",
+                        type="secondary",
+                        disabled=not confirm_line_delete,
+                        key=f"view_delete_line_{delete_key_base}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            if _delete_single_line(selected_path, selected_line_index):
+                                rebuilt = _rebuild_kb_index(view_scope, view_private_space, view_type)
+                                st.success(f"已删除所选条目，并重建索引（处理 {rebuilt} 个对象）。")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"删除失败：{e}")
+                            with st.expander("查看错误详情"):
+                                st.code(traceback.format_exc())
+
+
+def _delete_path_and_rebuild(
+    target_path: Path,
+    source_dir: Path,
+    scope: str,
+    private_space: str,
+    knowledge_type: str,
+) -> tuple[int, int]:
+    if not _path_is_under(target_path, source_dir):
+        raise ValueError("目标路径不在当前知识库目录内，已取消删除。")
+    target_path.unlink(missing_ok=True)
+    rebuilt = _rebuild_kb_index(scope, private_space, knowledge_type)
+    return 1, rebuilt
+
+
+def _delete_upload_group_and_rebuild(
+    selected_group: str,
+    selected_path: Path,
+    source_dir: Path,
+    scope: str,
+    private_space: str,
+    knowledge_type: str,
+) -> tuple[int, int]:
+    source_upload_name = _source_upload_name_for_entry(selected_path)
+    upload_dir = source_dir / "_uploads"
+    related_upload = upload_dir / source_upload_name if source_upload_name else None
+    derived_files = (
+        _find_derived_files_for_upload(source_dir, selected_path)
+        if selected_group == "原始上传"
+        else (
+            _find_derived_files_for_upload(source_dir, related_upload)
+            if related_upload and related_upload.exists()
+            else []
+        )
+    )
+    targets = list(derived_files)
+    if selected_group == "原始上传":
+        targets.append(selected_path)
+    elif related_upload and related_upload.exists():
+        targets.append(related_upload)
+    deleted = 0
+    for target in targets:
+        if _path_is_under(target, source_dir):
+            target.unlink(missing_ok=True)
+            deleted += 1
+    rebuilt = _rebuild_kb_index(scope, private_space, knowledge_type)
+    return deleted, rebuilt
 
 
 def _structure_case_with_llm(source_text: str, filename: str) -> dict | None:
@@ -1475,7 +1855,7 @@ def ingest_uploaded_files(scope: str, private_space: str, knowledge_type: str, u
     source_dir.mkdir(parents=True, exist_ok=True)
     index_dir.mkdir(parents=True, exist_ok=True)
     type_key = KNOWLEDGE_TYPE_CONFIG[knowledge_type]["key"]
-    raw_dir = source_dir.parent / "uploads"
+    raw_dir = source_dir / "_uploads"
     saved_files = _save_uploaded_files(uploaded_files, raw_dir)
     if not saved_files:
         return {"files": 0, "chunks": 0, "index": str(index_dir)}
@@ -2453,7 +2833,6 @@ def chat_page():
     if st.session_state.get("current_page") == "knowledge_view":
         render_knowledge_view_page()
         return
-
     # 1. 获取全局 Agent
     agent_graph = load_global_agent(st.session_state.get("private_kb_scope", ""))
     
