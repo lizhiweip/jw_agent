@@ -270,7 +270,7 @@ class QueryEnhancer:
         cn_nums = "零一二三四五六七八九"
         
         # 处理 0-20 的特殊读法
-        if num < 11:
+        if num < 10:
             return cn_nums[num]
         elif num < 20:
             return "十" + (cn_nums[num - 10] if num > 10 else "")
@@ -299,6 +299,8 @@ class QueryEnhancer:
         # 处理 1000-9999
         if num < 10000:
             thousands = num // 1000
+            if thousands >= len(cn_nums):
+                return num_str
             rest = num % 1000
             res = cn_nums[thousands] + "千"
             if rest > 0:
@@ -742,19 +744,50 @@ class LegalRAGapi:
         print(f"使用普通分块策略处理：{file_path}")
 
         if file_path.lower().endswith('.pdf'):
-            loader = PyPDFLoader(file_path)
+            pages = self._load_pdf_documents(file_path)
         elif file_path.lower().endswith(('.doc', '.docx')):
             loader = Docx2txtLoader(file_path)
+            pages = loader.load()
         elif file_path.lower().endswith('.txt'):
             loader = TextLoader(file_path, encoding='utf-8')
+            pages = loader.load()
         else:
             print(f"不支持的文件格式：{file_path}")
             return
 
-        pages = loader.load()
         documents = self.general_splitter.split_documents(pages)
         texts = [doc.page_content for doc in documents]
         self.add_documents(texts, save_to_disk=save_to_disk)
+
+    def _load_pdf_documents(self, file_path: str) -> List[Document]:
+        """加载 PDF。缺少 pypdf 时使用项目已依赖的 PyPDF2。"""
+        try:
+            loader = PyPDFLoader(file_path)
+            return loader.load()
+        except Exception as primary_error:
+            try:
+                from PyPDF2 import PdfReader
+            except Exception as import_error:
+                raise ImportError(
+                    "PDF 解析需要 pypdf 或 PyPDF2；当前环境都不可用。"
+                ) from import_error
+
+            reader = PdfReader(file_path)
+            documents: List[Document] = []
+            for page_index, page in enumerate(reader.pages, 1):
+                text = page.extract_text() or ""
+                if text.strip():
+                    documents.append(
+                        Document(
+                            page_content=text,
+                            metadata={"source": file_path, "page": page_index},
+                        )
+                    )
+            if not documents:
+                raise ValueError(
+                    "PDF 未抽取到可用文本，可能是扫描版 PDF。请先用 OCR 预处理脚本生成文本/JSON 后再入库。"
+                ) from primary_error
+            return documents
 
 
     def add_folder_documents(self, folder_path: str, save_to_disk: bool = True):
@@ -867,6 +900,7 @@ class LegalRAGapi:
     def save_vector_db(self):
         """保存向量数据库到本地"""
         if self.vector_db is not None:
+            os.makedirs(self.db_path, exist_ok=True)
             self.vector_db.save_local(self.db_path)
             print(f"向量数据库已保存到：{self.db_path}")
 

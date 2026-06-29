@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 import os
 
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2txtLoader
+from langchain_core.documents import Document
 
 from DocumentSplitter import DocumentSplitter, GeneralDocumentSplitter
 
@@ -54,14 +55,15 @@ class DocumentProcessor:
         """加载文件内容"""
         if file_path.lower().endswith('.txt'):
             loader = TextLoader(file_path, encoding='utf-8')
+            documents = loader.load()
         elif file_path.lower().endswith('.pdf'):
-            loader = PyPDFLoader(file_path)
+            documents = self._load_pdf_documents(file_path)
         elif file_path.lower().endswith(('.doc', '.docx')):
             loader = Docx2txtLoader(file_path)
+            documents = loader.load()
         else:
             return ""
 
-        documents = loader.load()
         return "\n".join([doc.page_content for doc in documents])
 
     def process_document(self, file_path: str) -> List[Dict[str, Any]]:
@@ -109,14 +111,45 @@ class DocumentProcessor:
         """加载文档"""
         if file_path.lower().endswith('.txt'):
             loader = TextLoader(file_path, encoding='utf-8')
+            return loader.load()
         elif file_path.lower().endswith('.pdf'):
-            loader = PyPDFLoader(file_path)
+            return self._load_pdf_documents(file_path)
         elif file_path.lower().endswith(('.doc', '.docx')):
             loader = Docx2txtLoader(file_path)
+            return loader.load()
         else:
             raise ValueError(f"不支持的文件格式: {file_path}")
 
-        return loader.load()
+    def _load_pdf_documents(self, file_path: str) -> List[Document]:
+        """加载 PDF。优先使用 LangChain；缺少 pypdf 时回退到已安装的 PyPDF2。"""
+        try:
+            loader = PyPDFLoader(file_path)
+            return loader.load()
+        except Exception as primary_error:
+            try:
+                from PyPDF2 import PdfReader
+            except Exception as import_error:
+                raise ImportError(
+                    "PDF 解析需要 pypdf 或 PyPDF2；当前环境都不可用。"
+                ) from import_error
+
+            reader = PdfReader(file_path)
+            documents: List[Document] = []
+            for page_index, page in enumerate(reader.pages, 1):
+                text = page.extract_text() or ""
+                if text.strip():
+                    documents.append(
+                        Document(
+                            page_content=text,
+                            metadata={"source": file_path, "page": page_index},
+                        )
+                    )
+
+            if not documents:
+                raise ValueError(
+                    "PDF 未抽取到可用文本，可能是扫描版 PDF。请先用 OCR 预处理脚本生成文本/JSON 后再入库。"
+                ) from primary_error
+            return documents
 
     def _extract_structured_articles(self, content: str) -> List[Dict[str, Any]]:
         """从文本中提取结构化的法律条款"""

@@ -2,7 +2,14 @@
 import os
 import sys
 import traceback
+import json
+import re
+import shutil
+import tempfile
+import subprocess
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 import threading
 import queue
 
@@ -31,10 +38,204 @@ load_dotenv()
 # ======================
 st.set_page_config(
     page_title="纪检监察业务助手",
-    page_icon="⚖️",
+    page_icon="⚙",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+def inject_legacy_browser_scroll_fix():
+    """兼容 Chrome 105 等旧浏览器的 Streamlit 页面滚动异常。"""
+    st.markdown(
+        """
+        <style>
+        html, body {
+            height: auto !important;
+            min-height: 100% !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+        }
+
+        #root,
+        .stApp,
+        [data-testid="stApp"],
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stMainBlockContainer"],
+        section.main,
+        section[data-testid="stMain"] {
+            height: auto !important;
+            min-height: 100vh !important;
+            max-height: none !important;
+            overflow: visible !important;
+            overflow-y: visible !important;
+        }
+
+        [data-testid="stVerticalBlock"],
+        [data-testid="stChatMessage"],
+        [data-testid="stExpander"],
+        [data-testid="stStatusWidget"] {
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+        }
+
+        /* Chrome 105 对新版 Streamlit 的 chat_input 容器定位不稳定。
+           这里使用基础 fixed 布局，避免输入框插到回答中间。 */
+        [data-testid="stBottomBlockContainer"] {
+            position: fixed !important;
+            left: 21rem !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            z-index: 999 !important;
+            background: #ffffff !important;
+            border-top: 1px solid #e8edf3 !important;
+            padding: 0.55rem 2.2rem 0.9rem 2.2rem !important;
+            box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.06) !important;
+        }
+
+        [data-testid="stChatInput"] {
+            position: static !important;
+            width: calc(100% - 5.5rem) !important;
+            max-width: calc(100% - 5.5rem) !important;
+            margin: 0 !important;
+            overflow: visible !important;
+        }
+
+        [data-testid="stChatInput"] > div {
+            background: #f3f6fa !important;
+            border-color: #ff6b6b !important;
+            border-radius: 10px !important;
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            overflow: visible !important;
+        }
+
+        [data-testid="stChatInput"] [data-baseweb="textarea"],
+        [data-testid="stChatInput"] [data-baseweb="base-input"],
+        [data-testid="stChatInputTextArea"],
+        [data-testid="stChatInput"] textarea {
+            min-height: 42px !important;
+            max-height: 150px !important;
+            border-radius: 10px !important;
+            background: #f3f6fa !important;
+            border-color: #f3f6fa !important;
+            box-shadow: none !important;
+        }
+
+        [data-testid="stChatInputSubmitButton"],
+        [data-testid="stChatInput"] [data-testid="stChatInputSubmitButton"],
+        [data-testid="stChatInput"] button,
+        [data-testid="stChatInput"] button[kind],
+        [data-testid="stChatInput"] button[type="button"],
+        [data-testid="stChatInput"] button[aria-label],
+        [data-testid="stChatInput"] [role="button"] {
+            position: static !important;
+            transform: none !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            color: #075985 !important;
+            background: #dff2ff !important;
+            border: 1px solid #9ed8ff !important;
+            width: 4.6rem !important;
+            min-width: 4.6rem !important;
+            height: 2.25rem !important;
+            min-height: 2.25rem !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border-radius: 0.55rem !important;
+            font-size: 0.9rem !important;
+            overflow: hidden !important;
+            box-shadow: none !important;
+            z-index: 3 !important;
+            pointer-events: auto !important;
+            flex: 0 0 auto !important;
+        }
+
+        [data-testid="stChatInputSubmitButton"] svg,
+        [data-testid="stChatInput"] svg {
+            display: block !important;
+            width: 1.1rem !important;
+            height: 1.1rem !important;
+            color: #075985 !important;
+        }
+
+        [data-testid="stChatInputSubmitButton"]:disabled,
+        [data-testid="stChatInput"] button:disabled {
+            cursor: not-allowed !important;
+            opacity: 0.58 !important;
+            background: #e6f1fb !important;
+            color: #64748b !important;
+        }
+
+        .block-container {
+            padding-bottom: 9.5rem !important;
+            max-width: 100% !important;
+        }
+
+        /* 紧凑化引用按钮和反馈按钮，避免宽屏/旧浏览器下间距被拉得很散。 */
+        div.stButton {
+            margin-top: 0.12rem !important;
+            margin-bottom: 0.12rem !important;
+        }
+
+        div.stButton > button {
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            text-align: center !important;
+            min-height: 2.05rem !important;
+            padding: 0.25rem 0.7rem !important;
+            border-radius: 0.42rem !important;
+            line-height: 1.2 !important;
+        }
+
+        div.stButton > button p,
+        div.stButton > button span,
+        div.stButton > button div[data-testid="stMarkdownContainer"] {
+            width: 100% !important;
+            margin: 0 !important;
+            text-align: center !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            line-height: 1.2 !important;
+        }
+
+        .feedback-row div.stButton > button {
+            width: 2.35rem !important;
+            min-width: 2.35rem !important;
+            max-width: 2.35rem !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+
+        .stChatMessage {
+            margin-bottom: 0.8rem !important;
+        }
+
+        [data-testid="stStatusWidget"] {
+            margin-bottom: 0.4rem !important;
+        }
+
+        @media (max-width: 900px) {
+            [data-testid="stBottomBlockContainer"] {
+                left: 0 !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_legacy_browser_scroll_fix()
 
 # ======================
 # 知识库初始化
@@ -65,6 +266,141 @@ qa_db_path = os.getenv(
     "VECTOR_QA_DB_PATH",
     os.path.join(os.getcwd(), "law_faiss_qa"),
 )
+PRIVATE_KB_ROOT = Path(os.getenv("PRIVATE_KB_ROOT", os.path.join(os.getcwd(), "private_knowledge_bases")))
+PRIVATE_INDEX_ROOT = Path(os.getenv("PRIVATE_INDEX_ROOT", os.path.join(os.getcwd(), "private_law_faiss")))
+UPLOAD_TMP_ROOT = Path(os.getenv("UPLOAD_TMP_ROOT", os.path.join(os.getcwd(), "data", "uploads")))
+for _path in (PRIVATE_KB_ROOT, PRIVATE_INDEX_ROOT, UPLOAD_TMP_ROOT):
+    _path.mkdir(parents=True, exist_ok=True)
+
+
+KNOWLEDGE_TYPE_CONFIG = {
+    "法律法规": {
+        "key": "lp",
+        "public_source": Path(KNOWLEDGE_BASE_LP_FOLDER),
+        "public_index": Path(lp_db_path),
+        "private_source": "knowledge_base_lp",
+        "private_index": "law_faiss_lp",
+    },
+    "案例": {
+        "key": "case",
+        "public_source": Path(KNOWLEDGE_BASE_CASE_FOLDER),
+        "public_index": Path(case_db_path),
+        "private_source": "knowledge_base_case",
+        "private_index": "law_faiss_case",
+    },
+    "办案规范": {
+        "key": "guidance",
+        "public_source": Path(os.getcwd()) / "knowledge_base_guidance" / "records",
+        "public_index": Path(guidance_db_path),
+        "private_source": "knowledge_base_guidance/records",
+        "private_index": "law_faiss_guidance",
+    },
+    "业务题库": {
+        "key": "qa",
+        "public_source": Path(os.getcwd()) / "knowledge_base_qa" / "records",
+        "public_index": Path(qa_db_path),
+        "private_source": "knowledge_base_qa/records",
+        "private_index": "law_faiss_qa",
+    },
+}
+
+
+def _safe_space_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return ""
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", name)
+    return cleaned.strip("._-")[:50]
+
+
+def _safe_index_space_name(name: str) -> str:
+    """FAISS on Windows can fail to write index files under non-ASCII paths."""
+    safe_name = _safe_space_name(name)
+    ascii_part = re.sub(r"[^A-Za-z0-9_.-]+", "_", safe_name).strip("._-")
+    digest = uuid.uuid5(uuid.NAMESPACE_URL, safe_name).hex[:12]
+    if ascii_part:
+        return f"{ascii_part[:36]}_{digest}"
+    return f"space_{digest}"
+
+
+def _private_source_dir(space: str, knowledge_type: str) -> Path:
+    cfg = KNOWLEDGE_TYPE_CONFIG[knowledge_type]
+    return PRIVATE_KB_ROOT / _safe_space_name(space) / cfg["private_source"]
+
+
+def _private_index_dir(space: str, knowledge_type: str) -> Path:
+    cfg = KNOWLEDGE_TYPE_CONFIG[knowledge_type]
+    return PRIVATE_INDEX_ROOT / _safe_index_space_name(space) / cfg["private_index"]
+
+
+def list_private_spaces() -> list[str]:
+    if not PRIVATE_KB_ROOT.exists():
+        return []
+    return sorted(
+        p.name for p in PRIVATE_KB_ROOT.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    )
+
+
+class CombinedRAG:
+    """把公共知识库和私有知识库包装成一个检索对象，供现有 Agent 无感使用。"""
+
+    def __init__(self, public_rag, private_rag=None):
+        self.public_rag = public_rag
+        self.private_rag = private_rag
+        self.source_dir = getattr(public_rag, "source_dir", None)
+        self.embedding_model = getattr(public_rag, "embedding_model", None)
+        self.vector_db = getattr(public_rag, "vector_db", None)
+        self.db_path = getattr(public_rag, "db_path", None)
+
+    def retrieve_documents(self, query: str, top_k: int = 10):
+        results = []
+        if self.public_rag is not None:
+            results.extend(self.public_rag.retrieve_documents(query, top_k=top_k))
+        if self.private_rag is not None:
+            results.extend(self.private_rag.retrieve_documents(query, top_k=top_k))
+        return sorted(results, key=lambda item: item[1], reverse=True)[:top_k]
+
+    def get_case_record(self, pid: str):
+        for rag in (self.public_rag, self.private_rag):
+            if rag is None:
+                continue
+            record = rag.get_case_record(pid)
+            if record:
+                return record
+        return None
+
+    def get_guidance_record(self, pid: str):
+        for rag in (self.public_rag, self.private_rag):
+            if rag is None:
+                continue
+            record = rag.get_guidance_record(pid)
+            if record:
+                return record
+        return None
+
+    def get_qa_record(self, pid: str):
+        for rag in (self.public_rag, self.private_rag):
+            if rag is None:
+                continue
+            record = rag.get_qa_record(pid)
+            if record:
+                return record
+        return None
+
+    def get_document_count(self):
+        total = 0
+        for rag in (self.public_rag, self.private_rag):
+            if rag is not None:
+                total += rag.get_document_count()
+        return total
+
+    def get_bm25_document_count(self):
+        total = 0
+        for rag in (self.public_rag, self.private_rag):
+            if rag is not None:
+                total += rag.get_bm25_document_count()
+        return total
 
 
 
@@ -106,6 +442,1072 @@ def initialize_vector_database(case_rag_model: LegalRAGapi, lp_rag_model: LegalR
         print(f"BM25索引构建完成，总文档数: {lp_rag_model.get_bm25_document_count()}")
     else:
         print("法条向量数据库已存在，跳过初始化构建")
+
+
+def _save_uploaded_files(uploaded_files, target_dir: Path) -> list[Path]:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    for uploaded_file in uploaded_files or []:
+        safe_name = Path(uploaded_file.name).name
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        dest = target_dir / f"{stamp}_{uuid.uuid4().hex[:8]}_{safe_name}"
+        with open(dest, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        saved_paths.append(dest)
+    return saved_paths
+
+
+def _ocr_python_executable() -> Path | None:
+    candidates = [
+        Path(os.getcwd()) / ".ocr_env" / "python.exe",
+        Path(os.getcwd()) / ".ocr_env" / "Scripts" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _append_guidance_record_texts(record_files: list[Path], texts: list[str], pids: list[str]):
+    for record_path in record_files:
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"⚠️ 办案规范记录读取失败：{record_path}，{e}")
+            continue
+        content = str(record.get("content") or "").strip()
+        pid = str(record.get("pid") or record_path.stem).strip()
+        if not content or not pid:
+            continue
+        texts.append(
+            "\n".join(
+                (
+                    f"【办案规范】{record.get('title', record_path.stem)}",
+                    f"【来源文件】{record.get('source_file', '')}",
+                    content,
+                )
+            )
+        )
+        pids.append(pid)
+
+
+def _build_guidance_records_with_ocr(file_path: Path, records_dir: Path) -> list[Path]:
+    ocr_python = _ocr_python_executable()
+    if not ocr_python:
+        raise RuntimeError(
+            "该 PDF 可能是扫描版，当前主环境无法直接抽取文字；未找到 .ocr_env/python.exe，无法自动 OCR。"
+        )
+
+    output_root = records_dir.parent
+    before = {path.resolve() for path in records_dir.glob("guidance_*.json")}
+    cmd = [
+        str(ocr_python),
+        str(Path(os.getcwd()) / "prepare_guidance_documents.py"),
+        "--source",
+        str(file_path.parent),
+        "--output",
+        str(output_root),
+        "--contains",
+        file_path.name,
+        "--force-ocr",
+    ]
+    print("🔎 扫描版 PDF 自动 OCR：", " ".join(cmd))
+    result = subprocess.run(
+        cmd,
+        cwd=os.getcwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "OCR 处理失败：\n"
+            + (result.stdout or "")
+            + "\n"
+            + (result.stderr or "")
+        )
+    after_files = sorted(records_dir.glob("guidance_*.json"), key=lambda p: p.stat().st_mtime)
+    new_files = [path for path in after_files if path.resolve() not in before]
+    if not new_files:
+        raise RuntimeError(
+            "OCR 已运行但未生成可入库记录。请检查 PDF 是否为空、是否加密，或查看 prepare_guidance_documents.py 输出。"
+        )
+    return new_files
+
+
+def _build_guidance_records_from_files(files: list[Path], records_dir: Path, rag: LegalRAGapi):
+    records_dir.mkdir(parents=True, exist_ok=True)
+    texts: list[str] = []
+    pids: list[str] = []
+    for file_path in files:
+        try:
+            structured_chunks = rag.document_processor.process_document(str(file_path))
+        except Exception as e:
+            if file_path.suffix.lower() == ".pdf":
+                print(f"⚠️ PDF 直接抽取失败，尝试 OCR：{e}")
+                ocr_records = _build_guidance_records_with_ocr(file_path, records_dir)
+                _append_guidance_record_texts(ocr_records, texts, pids)
+                continue
+            raise
+        if not structured_chunks:
+            continue
+        document_id = uuid.uuid5(uuid.NAMESPACE_URL, str(file_path)).hex[:12]
+        for idx, chunk in enumerate(structured_chunks, 1):
+            content = str(chunk.get("full_text") or chunk.get("content") or "").strip()
+            if not content:
+                continue
+            sub_chunks = [content]
+            if len(content) > 1200:
+                sub_chunks = rag.general_splitter.split_text(content)
+            for sub_idx, text in enumerate(sub_chunks, 1):
+                pid = f"guidance_upload_{document_id}_{idx:04d}_{sub_idx:02d}"
+                record = {
+                    "pid": pid,
+                    "document_id": document_id,
+                    "knowledge_type": "办案规范",
+                    "title": file_path.stem,
+                    "document_number": "",
+                    "confidentiality": "",
+                    "source_file": file_path.name,
+                    "page_start": chunk.get("page", chunk.get("page_start")),
+                    "page_end": chunk.get("page", chunk.get("page_end")),
+                    "chunk_index": idx,
+                    "section_title": chunk.get("title", ""),
+                    "heading_path": [],
+                    "content": text,
+                }
+                (records_dir / f"{pid}.json").write_text(
+                    json.dumps(record, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                texts.append(
+                    "\n".join(
+                        (
+                            f"【办案规范】{record['title']}",
+                            f"【来源文件】{record['source_file']}",
+                            text,
+                        )
+                    )
+                )
+                pids.append(pid)
+    if texts:
+        rag.add_documents(texts, pids=pids, save_to_disk=True)
+    return len(texts)
+
+
+def _extract_plain_text(path: Path, rag: LegalRAGapi) -> str:
+    if path.suffix.lower() == ".json":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return json.dumps(data, ensure_ascii=False)
+        except Exception:
+            return path.read_text(encoding="utf-8", errors="ignore")
+    if path.suffix.lower() == ".txt":
+        return path.read_text(encoding="utf-8", errors="ignore")
+    chunks = rag.document_processor.process_document(str(path))
+    return "\n".join(
+        str(chunk.get("full_text") or chunk.get("content") or "").strip()
+        for chunk in chunks
+        if str(chunk.get("full_text") or chunk.get("content") or "").strip()
+    )
+
+
+def _extract_json_object(text: str) -> dict | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _extract_json_array(text: str) -> list | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, list) else None
+    except Exception:
+        pass
+    match = re.search(r"\[.*\]", text, re.S)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
+def _clean_single_line(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").replace("\u3000", " ")).strip()
+
+
+def _original_upload_stem(path: Path) -> str:
+    stem = path.stem
+    return re.sub(r"^\d{14}_[0-9a-f]{8}_", "", stem)
+
+
+def _infer_statute_title(text: str, filename: str) -> str:
+    text = text or ""
+    fallback_bracket_title = None
+    for line in text.splitlines()[:30]:
+        line = _clean_single_line(line)
+        if not line:
+            continue
+        bracket_title = re.fullmatch(r"《([^》]{2,80})》", line)
+        if bracket_title:
+            fallback_bracket_title = bracket_title.group(1).strip()
+            continue
+        if re.match(r"^(第\s*[零〇一二三四五六七八九十百千万两\d\s]+\s*[章节条编]|目录|总则|附则|[一二三四五六七八九十百千万]+、)", line):
+            continue
+        if len(line) <= 80 and not re.search(r"[。；;，,]", line) and not re.search(r"第\s*[零〇一二三四五六七八九十百千万两\d\s]+\s*条", line):
+            return re.sub(r"(全文|原文|正式版|修订版)$", "", line).strip(" ：:") or Path(filename).stem
+
+    if fallback_bracket_title:
+        return fallback_bracket_title
+    bracket_title = re.search(r"《([^》]{2,80})》", text)
+    if bracket_title:
+        return bracket_title.group(1).strip()
+    return _original_upload_stem(Path(filename))
+
+
+def _title_looks_bad(title: str) -> bool:
+    title = title or ""
+    return (
+        not title
+        or len(title) > 60
+        or "《" in title
+        or "》" in title
+        or bool(re.search(r"第\s*[零〇一二三四五六七八九十百千万两\d\s]+\s*条", title))
+        or bool(re.search(r"[。；;，,]", title))
+    )
+
+
+def _candidate_title_from_line(line: str) -> str:
+    line = _clean_single_line(line)
+    line = re.sub(r"^《([^》]+)》$", r"\1", line)
+    line = re.sub(r"[（(].{0,30}?[）)]$", "", line).strip()
+    if (
+        4 <= len(line) <= 40
+        and re.search(r"(条例|法律|法|规定|办法|规则|细则|决定|解释|通知|意见|监察法)", line)
+        and not re.search(r"第\s*[零〇一二三四五六七八九十百千万两\d\s]+\s*条", line)
+        and not re.search(r"[。；;，,]", line)
+    ):
+        return line
+    return ""
+
+
+def _repair_statute_title(title: str, source_text: str, filename: str, lines: list[str]) -> str:
+    title = (title or "").strip("《》 ")
+    candidates: list[str] = []
+    for raw_line in (source_text or "").splitlines()[:80]:
+        candidate = _candidate_title_from_line(raw_line)
+        if candidate:
+            candidates.append(candidate)
+
+    for line in lines[:5]:
+        body = re.sub(r"^《[^》]+》\s*第\s*[零〇一二三四五六七八九十百千万两\d\s]+\s*条\s*", "", line)
+        head = re.split(r"[，,。；;：:]", body, maxsplit=1)[0].strip()
+        candidate = _candidate_title_from_line(head)
+        if candidate:
+            candidates.append(candidate)
+
+    if candidates:
+        if _title_looks_bad(title):
+            return candidates[0]
+        for candidate in candidates:
+            if candidate != title and candidate not in title and title not in candidate:
+                first_body = lines[0] if lines else source_text[:500]
+                first_body = re.sub(
+                    r"^《[^》]+》\s*第\s*[零〇一二三四五六七八九十百千万两\d\s]+\s*条\s*",
+                    "",
+                    first_body,
+                )
+                if candidate in first_body and title not in first_body:
+                    return candidate
+
+    if not _title_looks_bad(title):
+        return title
+
+    return _original_upload_stem(Path(filename))
+
+
+def _replace_statute_title(lines: list[str], title: str) -> list[str]:
+    return [
+        re.sub(r"^《.*》(?=第\s*[零〇一二三四五六七八九十百千万两\d\s]+\s*条|第[一二三四五六七八九十百千万]+项|全文)", f"《{title}》", line, count=1)
+        for line in lines
+    ]
+
+
+def _split_statute_articles(text: str, title: str) -> list[str]:
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    article_num_token = r"[零〇一二三四五六七八九十百千万两\d](?:\s*[零〇一二三四五六七八九十百千万两\d])*"
+    article_token = rf"第\s*{article_num_token}\s*条"
+
+    def build_lines(matches: list[re.Match], label_getter) -> list[str]:
+        built: list[str] = []
+        for idx, match in enumerate(matches):
+            label = re.sub(r"\s+", "", label_getter(match))
+            start = match.end()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+            body = _clean_single_line(text[start:end])
+            body = re.sub(rf"^({article_token}|[一二三四五六七八九十百千万]+、)\s*", "", body).strip()
+            body = re.sub(r"(?:\s*《[^》]{2,80}》\s*)+$", "", body).strip()
+            if body:
+                built.append(f"《{title}》{label} {body}")
+        return built
+
+    article_pattern = re.compile(rf"(?m)^\s*({article_token})\s*")
+    matches = list(article_pattern.finditer(text))
+    if len(matches) < 2:
+        article_pattern = re.compile(rf"(?:^|[\n。；;])\s*({article_token})\s*")
+        matches = list(article_pattern.finditer(text))
+    if len(matches) < 2:
+        article_pattern = re.compile(rf"({article_token})\s*")
+        loose_matches = list(article_pattern.finditer(text))
+        if len(loose_matches) >= 2:
+            matches = loose_matches
+
+    lines = build_lines(matches, lambda m: m.group(1)) if matches else []
+    if len(lines) >= 2:
+        return lines
+
+    item_pattern = re.compile(r"(?m)^\s*([一二三四五六七八九十百千万]+)、\s*")
+    item_matches = list(item_pattern.finditer(text))
+    if len(item_matches) < 2:
+        item_pattern = re.compile(r"(?:^|[\n。；;])\s*([一二三四五六七八九十百千万]+)、\s*")
+        item_matches = list(item_pattern.finditer(text))
+    if len(item_matches) >= 2:
+        return build_lines(item_matches, lambda m: f"第{m.group(1)}项")
+
+    return lines
+
+
+def _format_statute_with_llm(source_text: str, filename: str) -> list[str]:
+    api_key = st.session_state.get("current_api_key") or os.getenv("DEEPSEEK_API_KEY")
+    base_url = st.session_state.get("current_base_url") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    model_name = st.session_state.get("current_model_name") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    if not api_key:
+        return []
+
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            model=model_name,
+            temperature=0,
+            streaming=False,
+        )
+        prompt = f"""
+你是法规文本结构化助手。请把用户上传的一部法规原文整理成“一行一条”的字符串数组。
+要求：
+1. 只输出 JSON 数组，不要输出 Markdown，不要解释。
+2. 每个元素格式必须是： 《法规标题》第X条 原文正文
+3. 不要总结、改写、增删原文；只做标题补齐、条文合并、换行清理。
+4. 如果无法识别条文，返回空数组 []。
+5. 上传内容通常只是一部法规或一个版本，不要编造其他版本。
+
+文件名：{filename}
+原文：
+{source_text[:16000]}
+"""
+        response = llm.invoke(prompt)
+        data = _extract_json_array(getattr(response, "content", ""))
+        if not data:
+            return []
+        return [_clean_single_line(str(item)) for item in data if _clean_single_line(str(item))]
+    except Exception as e:
+        print(f"⚠️ 法规文本 LLM 重构失败：{e}")
+        return []
+
+
+def _build_statute_records_from_files(files: list[Path], source_dir: Path, rag: LegalRAGapi) -> int:
+    source_dir.mkdir(parents=True, exist_ok=True)
+    total_lines = 0
+    for path in files:
+        source_text = _extract_plain_text(path, rag)
+        if not source_text:
+            continue
+
+        normalized_stem = _original_upload_stem(path)
+        title = normalized_stem or _infer_statute_title(source_text, path.name)
+        lines = _split_statute_articles(source_text, title)
+        if len(lines) < 2:
+            llm_lines = _format_statute_with_llm(source_text, path.name)
+            if llm_lines:
+                lines = _replace_statute_title(llm_lines, title)
+
+        if not lines:
+            fallback = _clean_single_line(source_text)
+            if fallback:
+                lines = [f"《{title}》全文 {fallback}"]
+
+        if not lines:
+            continue
+
+        lines = _replace_statute_title(lines, title)
+
+        normalized_path = source_dir / f"{normalized_stem}.txt"
+        if normalized_path.exists():
+            normalized_path = source_dir / f"{normalized_stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.txt"
+        normalized_path.write_text("\n".join(lines), encoding="utf-8")
+        Path(rag.db_path).mkdir(parents=True, exist_ok=True)
+        rag.add_file_documents(str(normalized_path), save_to_disk=True)
+        total_lines += len(lines)
+
+    return total_lines
+
+
+def _read_docx_preview(path: Path, max_chars: int) -> str:
+    try:
+        from zipfile import ZipFile
+        import xml.etree.ElementTree as ET
+
+        with ZipFile(path) as zf:
+            root = ET.fromstring(zf.read("word/document.xml"))
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        paragraphs = []
+        for para in root.findall(".//w:p", ns):
+            text = "".join(t.text or "" for t in para.findall(".//w:t", ns)).strip()
+            if text:
+                paragraphs.append(text)
+        return "\n".join(paragraphs)[:max_chars] or "未抽取到可预览文本。"
+    except Exception as e:
+        return f"DOCX 预览失败：{e}"
+
+
+def _read_pdf_preview(path: Path, max_chars: int) -> str:
+    try:
+        try:
+            from pypdf import PdfReader
+        except Exception:
+            from PyPDF2 import PdfReader
+
+        reader = PdfReader(str(path))
+        pages = []
+        for page in reader.pages[:8]:
+            text = page.extract_text() or ""
+            if text.strip():
+                pages.append(text.strip())
+        return "\n\n".join(pages)[:max_chars] or "未抽取到可预览文本，可能是扫描版 PDF。"
+    except Exception as e:
+        return f"PDF 预览失败：{e}"
+
+
+def _xlsx_column_index(cell_ref: str) -> int:
+    letters = re.sub(r"[^A-Z]", "", (cell_ref or "").upper())
+    index = 0
+    for char in letters:
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return max(index - 1, 0)
+
+
+def _read_xlsx_rows(path: Path, max_rows_per_sheet: int | None = None) -> list[tuple[str, list[list[str]]]]:
+    from zipfile import ZipFile
+    import xml.etree.ElementTree as ET
+
+    ns_main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    ns_rel = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    ns_pkg_rel = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+    def read_xml(zf: ZipFile, name: str):
+        return ET.fromstring(zf.read(name))
+
+    with ZipFile(path) as zf:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = read_xml(zf, "xl/sharedStrings.xml")
+            for si in root.findall(f"{ns_main}si"):
+                text = "".join(t.text or "" for t in si.findall(f".//{ns_main}t"))
+                shared_strings.append(text)
+
+        rels = {}
+        if "xl/_rels/workbook.xml.rels" in zf.namelist():
+            rel_root = read_xml(zf, "xl/_rels/workbook.xml.rels")
+            for rel in rel_root:
+                rel_id = rel.attrib.get("Id")
+                target = rel.attrib.get("Target", "")
+                if rel_id and target:
+                    clean_target = target.lstrip("/")
+                    rels[rel_id] = clean_target if clean_target.startswith("xl/") else "xl/" + clean_target
+
+        workbook = read_xml(zf, "xl/workbook.xml")
+        sheets = []
+        for sheet in workbook.findall(f".//{ns_main}sheet"):
+            name = sheet.attrib.get("name", "Sheet")
+            rel_id = sheet.attrib.get(f"{ns_rel}id")
+            target = rels.get(rel_id or "")
+            if target:
+                sheets.append((name, target))
+
+        result: list[tuple[str, list[list[str]]]] = []
+        for sheet_name, sheet_path in sheets:
+            if sheet_path not in zf.namelist():
+                continue
+            root = read_xml(zf, sheet_path)
+            rows: list[list[str]] = []
+            for row_idx, row_node in enumerate(root.findall(f".//{ns_main}sheetData/{ns_main}row"), 1):
+                if max_rows_per_sheet is not None and len(rows) >= max_rows_per_sheet:
+                    break
+                row_values: list[str] = []
+                for cell in row_node.findall(f"{ns_main}c"):
+                    cell_ref = cell.attrib.get("r", "")
+                    col_idx = _xlsx_column_index(cell_ref)
+                    while len(row_values) <= col_idx:
+                        row_values.append("")
+                    cell_type = cell.attrib.get("t")
+                    value_node = cell.find(f"{ns_main}v")
+                    inline_node = cell.find(f"{ns_main}is/{ns_main}t")
+                    value = ""
+                    if cell_type == "inlineStr" and inline_node is not None:
+                        value = inline_node.text or ""
+                    elif value_node is not None:
+                        raw_value = value_node.text or ""
+                        if cell_type == "s":
+                            try:
+                                value = shared_strings[int(raw_value)]
+                            except Exception:
+                                value = raw_value
+                        elif cell_type == "b":
+                            value = "是" if raw_value == "1" else "否"
+                        else:
+                            value = raw_value
+                    row_values[col_idx] = str(value).strip()
+                if any(row_values):
+                    rows.append(row_values)
+            result.append((sheet_name, rows))
+    return result
+
+
+def _read_xlsx_preview(path: Path, max_chars: int) -> str:
+    try:
+        parts = []
+        for sheet_name, rows in _read_xlsx_rows(path, max_rows_per_sheet=30)[:3]:
+            parts.append(f"【{sheet_name}】")
+            for row in rows:
+                if any(value.strip() for value in row):
+                    parts.append("\t".join(row))
+        return "\n".join(parts)[:max_chars] or "未抽取到可预览内容。"
+    except Exception as e:
+        return f"XLSX 预览失败：{e}"
+
+
+def _read_kb_file_preview(path: Path, max_chars: int = 12000) -> str:
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return json.dumps(data, ensure_ascii=False, indent=2)[:max_chars]
+        if suffix in {".txt", ".md", ".csv"}:
+            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+        if suffix == ".docx":
+            return _read_docx_preview(path, max_chars)
+        if suffix == ".pdf":
+            return _read_pdf_preview(path, max_chars)
+        if suffix == ".xlsx":
+            return _read_xlsx_preview(path, max_chars)
+        return f"该文件类型暂不直接预览：{path.name}\n路径：{path}"
+    except Exception as e:
+        return f"读取失败：{e}"
+
+
+def _collect_kb_files(source_dir: Path) -> list[tuple[str, Path]]:
+    files: list[tuple[str, Path]] = []
+    if source_dir.exists():
+        files.extend(("入库文件", path) for path in source_dir.rglob("*") if path.is_file())
+    upload_dir = source_dir.parent / "uploads"
+    if upload_dir.exists():
+        files.extend(("原始上传", path) for path in upload_dir.rglob("*") if path.is_file())
+    return sorted(files, key=lambda item: item[1].stat().st_mtime, reverse=True)
+
+
+def render_knowledge_view_page():
+    st.title("查看知识库")
+    st.caption("查看公共知识库和私有知识库中的入库文件、原始上传文件及内容预览。")
+
+    top_left, top_right = st.columns([1, 5])
+    with top_left:
+        if st.button("返回对话", key="back_to_chat_from_kb_view", use_container_width=True):
+            st.session_state.current_page = "chat"
+            st.rerun()
+    with top_right:
+        if st.button("去上传知识库", key="go_to_kb_upload_from_view", use_container_width=True):
+            st.session_state.current_page = "knowledge_upload"
+            st.rerun()
+
+    st.divider()
+    c1, c2, c3 = st.columns([1.2, 1.6, 1.6])
+    with c1:
+        view_scope = st.radio(
+        "查看范围",
+        options=["公共知识库", "私有知识库"],
+        horizontal=True,
+        key="kb_view_scope",
+        )
+    view_private_space = ""
+    with c2:
+        if view_scope == "私有知识库":
+            spaces = list_private_spaces()
+            if not spaces:
+                st.info("当前还没有私有知识库。")
+                return
+            view_private_space = st.selectbox(
+                "选择私有知识库",
+                options=spaces,
+                key="kb_view_private_space",
+            )
+        else:
+            st.selectbox("选择私有知识库", options=["不使用"], disabled=True, key="kb_view_private_disabled")
+    with c3:
+        view_type = st.selectbox(
+            "知识库类型",
+            options=list(KNOWLEDGE_TYPE_CONFIG.keys()),
+            key="kb_view_type",
+        )
+    try:
+        source_dir, index_dir = _get_target_paths(view_scope, view_private_space, view_type)
+    except Exception as e:
+        st.warning(str(e))
+        return
+
+    files = _collect_kb_files(source_dir)
+    source_count = sum(1 for group, _ in files if group == "入库文件")
+    upload_count = sum(1 for group, _ in files if group == "原始上传")
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("入库文件", source_count)
+    m2.metric("原始上传", upload_count)
+    m3.metric("索引目录", "已创建" if index_dir.exists() else "未创建")
+
+    with st.expander("目录信息", expanded=False):
+        st.code(f"源文件目录：{source_dir}\n索引目录：{index_dir}")
+
+    if not files:
+        st.info("该知识库暂无文件。")
+        return
+
+    left, right = st.columns([1.15, 2.2], gap="large")
+    with left:
+        group_filter = st.radio(
+            "文件类别",
+            options=["全部", "入库文件", "原始上传"],
+            horizontal=True,
+            key="kb_view_group_filter",
+        )
+        keyword = st.text_input("按文件名搜索", key="kb_view_keyword", placeholder="输入关键词筛选")
+        visible_files = [
+            (group, path)
+            for group, path in files
+            if (group_filter == "全部" or group == group_filter)
+            and (not keyword.strip() or keyword.strip().lower() in path.name.lower())
+        ]
+        if not visible_files:
+            st.warning("没有匹配的文件。")
+            return
+        file_labels = [
+            f"{group} | {path.name} | {path.stat().st_size / 1024:.1f} KB"
+            for group, path in visible_files
+        ]
+        selected_label = st.selectbox(
+            "文件列表",
+            options=file_labels,
+            key=f"kb_file_preview_{view_scope}_{view_private_space}_{view_type}_{group_filter}",
+        )
+        selected_group, selected_path = visible_files[file_labels.index(selected_label)]
+
+    with right:
+        header_col, download_col = st.columns([3, 1])
+        with header_col:
+            st.markdown(f"### {selected_path.name}")
+            st.caption(f"{selected_group} / {selected_path.suffix.lower() or '无扩展名'} / {selected_path.stat().st_size / 1024:.1f} KB")
+        with download_col:
+            st.download_button(
+                "下载文件",
+                data=selected_path.read_bytes(),
+                file_name=selected_path.name,
+                mime="application/octet-stream",
+                use_container_width=True,
+            )
+
+        preview = _read_kb_file_preview(selected_path)
+        if selected_path.suffix.lower() == ".json":
+            st.code(preview, language="json")
+        else:
+            st.text_area("内容预览", preview, height=520, disabled=True)
+
+
+def _structure_case_with_llm(source_text: str, filename: str) -> dict | None:
+    api_key = st.session_state.get("current_api_key") or os.getenv("DEEPSEEK_API_KEY")
+    base_url = st.session_state.get("current_base_url") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    model_name = st.session_state.get("current_model_name") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    if not api_key:
+        return None
+
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            model=model_name,
+            temperature=0,
+            streaming=False,
+        )
+        prompt = f"""
+你是纪检监察案例材料结构化助手。请把用户上传的案例/案情材料整理为严格 JSON。
+只输出 JSON，不要输出 Markdown，不要解释。
+
+字段要求：
+- pid: 留空，系统会生成
+- fact: 案件事实或线索事实，尽量完整但不要编造
+- reason: 违反内容、定性理由、问题性质、审理意见；没有就留空
+- result: 处理结果、处分结果、移送情况；没有就留空
+- charge: 数组，涉及罪名、违纪类型或问题类型；没有就 []
+- article: 数组，涉及条文编号或法规条目；没有就 []
+- qw: 原文全文或可核验摘录
+
+禁止编造原文没有的信息。不能确定的字段留空或 []。
+
+文件名：{filename}
+原文：
+{source_text[:12000]}
+"""
+        response = llm.invoke(prompt)
+        content = getattr(response, "content", "")
+        data = _extract_json_object(content)
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        print(f"⚠️ 案例结构化 LLM 调用失败：{e}")
+        return None
+
+
+def _normalize_case_record(record: dict | None, source_text: str, filename: str) -> dict:
+    record = record if isinstance(record, dict) else {}
+    pid = str(record.get("pid") or f"case_upload_{uuid.uuid4().hex[:12]}").strip()
+    fact = str(record.get("fact") or "").strip()
+    reason = str(record.get("reason") or "").strip()
+    result = str(record.get("result") or "").strip()
+    qw = str(record.get("qw") or "").strip()
+    if not fact:
+        fact = source_text[:6000]
+    if not qw:
+        qw = source_text
+
+    charge = record.get("charge") or []
+    if isinstance(charge, str):
+        charge = [item.strip() for item in re.split(r"[、,，;\s]+", charge) if item.strip()]
+    if not isinstance(charge, list):
+        charge = []
+
+    article = record.get("article") or []
+    if isinstance(article, str):
+        article = [item.strip() for item in re.split(r"[、,，;\s]+", article) if item.strip()]
+    if not isinstance(article, list):
+        article = []
+
+    return {
+        "pid": pid,
+        "source_file": filename,
+        "fact": fact,
+        "reason": reason,
+        "result": result,
+        "charge": charge,
+        "article": article,
+        "qw": qw,
+    }
+
+
+def _case_field_from_row(row: dict, aliases: list[str]) -> str:
+    alias_set = {alias.lower() for alias in aliases}
+    for key, value in row.items():
+        normalized_key = str(key or "").strip().lower()
+        if normalized_key in alias_set or any(alias in normalized_key for alias in alias_set):
+            text = str(value or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _split_case_list_field(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[、,，;；\n\r\t]+", value or "") if item.strip()]
+
+
+def _row_to_case_record(row: dict, source_file: str, row_number: int) -> dict:
+    fact = _case_field_from_row(
+        row,
+        ["fact", "案件事实", "事实", "案情", "线索事实", "主要事实", "问题事实", "违纪事实", "违法事实", "案例内容", "内容"],
+    )
+    reason = _case_field_from_row(
+        row,
+        ["reason", "理由", "判决理由", "处理理由", "定性依据", "定性理由", "违反内容", "问题性质", "审理意见", "分析"],
+    )
+    result = _case_field_from_row(
+        row,
+        ["result", "结果", "处理结果", "处分结果", "判决结果", "处置结果", "移送情况", "结论"],
+    )
+    charge = _case_field_from_row(
+        row,
+        ["charge", "罪名", "违纪类型", "问题类型", "违法类型", "涉及问题", "案由"],
+    )
+    article = _case_field_from_row(
+        row,
+        ["article", "条文", "法条", "法规依据", "依据", "适用条款", "适用法规"],
+    )
+    pid = _case_field_from_row(row, ["pid", "id", "编号", "案号", "序号"])
+    title = _case_field_from_row(row, ["标题", "名称", "案例名称", "案件名称"])
+
+    row_text_parts = []
+    for key, value in row.items():
+        text = str(value or "").strip()
+        if text:
+            row_text_parts.append(f"{key}: {text}")
+    row_text = "\n".join(row_text_parts)
+
+    if not fact:
+        fact = row_text
+    if title and title not in fact:
+        fact = f"{title}\n{fact}".strip()
+
+    return _normalize_case_record(
+        {
+            "pid": pid or f"case_upload_{Path(source_file).stem}_{row_number}_{uuid.uuid4().hex[:8]}",
+            "fact": fact,
+            "reason": reason,
+            "result": result,
+            "charge": _split_case_list_field(charge),
+            "article": _split_case_list_field(article),
+            "qw": row_text,
+        },
+        row_text,
+        source_file,
+    )
+
+
+def _case_records_from_excel(path: Path) -> list[dict]:
+    records: list[dict] = []
+    for sheet_name, sheet_rows in _read_xlsx_rows(path):
+        headers = None
+        for row_index, cells in enumerate(sheet_rows, 1):
+            cells = [str(value or "").strip() for value in cells]
+            if not any(cells):
+                continue
+            if headers is None:
+                headers = [
+                    cell if cell else f"列{idx}"
+                    for idx, cell in enumerate(cells, 1)
+                ]
+                continue
+            row = {
+                headers[idx] if idx < len(headers) else f"列{idx + 1}": cells[idx]
+                for idx in range(max(len(headers), len(cells)))
+                if idx < len(cells) and cells[idx]
+            }
+            if not row:
+                continue
+            row["工作表"] = sheet_name
+            records.append(_row_to_case_record(row, path.name, row_index))
+    return records
+
+
+def _build_qa_records_from_files(files: list[Path], records_dir: Path, rag: LegalRAGapi):
+    records_dir.mkdir(parents=True, exist_ok=True)
+    files_by_stem = {path.stem: path for path in files}
+    used: set[Path] = set()
+    texts: list[str] = []
+    pids: list[str] = []
+
+    pair_pattern = re.compile(r"^(?P<number>\d+)(?P<answer>\.1)?$")
+    numbers = sorted(
+        {
+            int(match.group("number"))
+            for path in files
+            for match in [pair_pattern.match(path.stem)]
+            if match
+        }
+    )
+    for number in numbers:
+        question_path = files_by_stem.get(str(number))
+        answer_path = files_by_stem.get(f"{number}.1")
+        if not question_path or not answer_path:
+            continue
+        question = _extract_plain_text(question_path, rag)
+        answer = _extract_plain_text(answer_path, rag)
+        if not question or not answer:
+            continue
+        pid = f"qa_upload_{uuid.uuid4().hex[:12]}"
+        record = {
+            "pid": pid,
+            "knowledge_type": "业务问答",
+            "number": number,
+            "title": f"上传业务问答第{number}题",
+            "category": "纪检监察业务题",
+            "question": question,
+            "answer": answer,
+            "question_file": question_path.name,
+            "answer_file": answer_path.name,
+        }
+        (records_dir / f"{pid}.json").write_text(
+            json.dumps(record, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        texts.extend(
+            (
+                f"【业务问答题目】{record['title']}\n【题目】{question}",
+                f"【业务问答参考答案】{record['title']}\n【参考答案】{answer}",
+            )
+        )
+        pids.extend((pid, pid))
+        used.update({question_path, answer_path})
+
+    for path in files:
+        if path in used:
+            continue
+        if path.suffix.lower() == ".json":
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                data = None
+            records = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+            for record in records:
+                question = str(record.get("question") or record.get("题目") or "").strip()
+                answer = str(record.get("answer") or record.get("答案") or "").strip()
+                if not question or not answer:
+                    continue
+                pid = str(record.get("pid") or f"qa_upload_{uuid.uuid4().hex[:12]}")
+                normalized = {
+                    "pid": pid,
+                    "knowledge_type": "业务问答",
+                    "title": record.get("title", path.stem),
+                    "category": record.get("category", "纪检监察业务题"),
+                    "question": question,
+                    "answer": answer,
+                    "question_file": path.name,
+                    "answer_file": path.name,
+                }
+                (records_dir / f"{pid}.json").write_text(
+                    json.dumps(normalized, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                texts.extend(
+                    (
+                        f"【业务问答题目】{normalized['title']}\n【题目】{question}",
+                        f"【业务问答参考答案】{normalized['title']}\n【参考答案】{answer}",
+                    )
+                )
+                pids.extend((pid, pid))
+
+    if texts:
+        rag.add_documents(texts, pids=pids, save_to_disk=True)
+    return len(texts)
+
+
+def _build_case_records_from_files(files: list[Path], source_dir: Path, rag: LegalRAGapi) -> int:
+    json_files: list[Path] = []
+    for path in files:
+        records_to_write: list[dict] = []
+        source_text = ""
+        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+            records_to_write.extend(_case_records_from_excel(path))
+        else:
+            source_text = _extract_plain_text(path, rag)
+            if not source_text:
+                continue
+            try:
+                data = json.loads(source_text) if path.suffix.lower() == ".json" else None
+            except Exception:
+                data = None
+
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        records_to_write.append(_normalize_case_record(item, source_text, path.name))
+            elif isinstance(data, dict):
+                records_to_write.append(_normalize_case_record(data, source_text, path.name))
+            else:
+                structured = _structure_case_with_llm(source_text, path.name)
+                records_to_write.append(_normalize_case_record(structured, source_text, path.name))
+
+        for record in records_to_write:
+            dest = source_dir / f"{record['pid']}.json"
+            dest.write_text(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            json_files.append(dest)
+
+    for json_path in json_files:
+        rag.add_file_documents(str(json_path), save_to_disk=True)
+    return rag.get_document_count()
+
+
+def _get_target_paths(scope: str, private_space: str, knowledge_type: str) -> tuple[Path, Path]:
+    cfg = KNOWLEDGE_TYPE_CONFIG[knowledge_type]
+    if scope == "私有知识库":
+        safe_space = _safe_space_name(private_space)
+        if not safe_space:
+            raise ValueError("请选择或输入私有知识库名称")
+        return _private_source_dir(safe_space, knowledge_type), _private_index_dir(safe_space, knowledge_type)
+    return cfg["public_source"], cfg["public_index"]
+
+
+def ingest_uploaded_files(scope: str, private_space: str, knowledge_type: str, uploaded_files) -> dict:
+    source_dir, index_dir = _get_target_paths(scope, private_space, knowledge_type)
+    source_dir.mkdir(parents=True, exist_ok=True)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    type_key = KNOWLEDGE_TYPE_CONFIG[knowledge_type]["key"]
+    raw_dir = source_dir.parent / "uploads"
+    saved_files = _save_uploaded_files(uploaded_files, raw_dir)
+    if not saved_files:
+        return {"files": 0, "chunks": 0, "index": str(index_dir)}
+
+    base_embedding = None
+    try:
+        base_agent = load_global_agent(st.session_state.get("private_kb_scope", ""))
+        base_embedding = getattr(getattr(base_agent, "case_rag", None), "embedding_model", None)
+    except Exception:
+        base_embedding = None
+
+    rag = LegalRAGapi(
+        db_path=str(index_dir),
+        source_dir=str(source_dir),
+        vector_weight=0.3 if knowledge_type != "业务题库" else 0.4,
+        bm25_weight=0.7 if knowledge_type != "业务题库" else 0.6,
+        embedding_model=base_embedding,
+    )
+
+    chunks = 0
+    if type_key in ("lp", "case"):
+        if type_key == "case":
+            chunks = _build_case_records_from_files(saved_files, source_dir, rag)
+        else:
+            chunks = _build_statute_records_from_files(saved_files, source_dir, rag)
+    elif type_key == "guidance":
+        chunks = _build_guidance_records_from_files(saved_files, source_dir, rag)
+    else:
+        chunks = _build_qa_records_from_files(saved_files, source_dir, rag)
+
+    load_global_agent.clear()
+    return {"files": len(saved_files), "chunks": chunks, "index": str(index_dir)}
 
 # ======================
 # 数据库引擎（带线程安全）
@@ -229,13 +1631,26 @@ def _render_response_feedback(
     if saved_rating_label and st.session_state.get(rating_key) is None:
         st.session_state[rating_key] = saved_rating_label
 
-    rating = st.segmented_control(
-        "请评价本次回答",
-        options=["好", "中", "差"],
-        key=rating_key,
-        label_visibility="collapsed",
-        width="content",
-    )
+    st.markdown('<div class="feedback-row">', unsafe_allow_html=True)
+    feedback_cols = st.columns([0.45, 0.45, 0.45, 10], gap="small")
+    with feedback_cols[0]:
+        good_clicked = st.button("好", key=f"{rating_key}_good", use_container_width=True)
+    with feedback_cols[1]:
+        medium_clicked = st.button("中", key=f"{rating_key}_medium", use_container_width=True)
+    with feedback_cols[2]:
+        bad_clicked = st.button("差", key=f"{rating_key}_bad", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    rating = st.session_state.get(rating_key)
+    if good_clicked:
+        rating = "好"
+        st.session_state[rating_key] = rating
+    elif medium_clicked:
+        rating = "中"
+        st.session_state[rating_key] = rating
+    elif bad_clicked:
+        rating = "差"
+        st.session_state[rating_key] = rating
 
     if rating == "好":
         if saved_rating_code != "good" or saved_comment:
@@ -280,6 +1695,12 @@ def _render_response_feedback(
             st.toast("感谢反馈，您的意见已保存。", icon="✅")
             st.rerun()
 
+
+def _render_chat_input_form(form_key: str, disabled: bool = False) -> str | None:
+    """底部输入框。使用 Streamlit 原生 chat_input 保持底部定位。"""
+    return st.chat_input("请输入问题...", key=form_key, disabled=disabled)
+
+
 # ======================
 # 从 DB 加载历史对话
 # ======================
@@ -313,8 +1734,26 @@ def load_chat_history_from_db(chat_id: int, limit: int = 10):
 # ======================
 # RAG 模型初始化
 # ======================
+def _load_private_rag(space: str, knowledge_type: str, embedding_model, vector_weight: float, bm25_weight: float):
+    safe_space = _safe_space_name(space)
+    if not safe_space:
+        return None
+    index_dir = _private_index_dir(safe_space, knowledge_type)
+    source_dir = _private_source_dir(safe_space, knowledge_type)
+    if not index_dir.exists():
+        return None
+    print(f"📂 准备加载私有{knowledge_type}库：{index_dir}")
+    return LegalRAGapi(
+        db_path=str(index_dir),
+        source_dir=str(source_dir),
+        vector_weight=vector_weight,
+        bm25_weight=bm25_weight,
+        embedding_model=embedding_model,
+    )
+
+
 @st.cache_resource(show_spinner="🧠 正在加载纪检监察知识库与智能体引擎（仅首次启动需要）...")
-def load_global_agent():
+def load_global_agent(private_space: str = ""):
     """加载 RAG 系统并编译 Agent 图"""
     try:
         print(f"📂 准备加载案例库：{case_db_path}")
@@ -359,6 +1798,19 @@ def load_global_agent():
         else:
             print(f"ℹ️ 业务问答库尚未构建：{qa_db_path}")
         initialize_vector_database(case_rag, lp_rag)
+
+        private_space = _safe_space_name(private_space)
+        if private_space:
+            private_case_rag = _load_private_rag(private_space, "案例", case_rag.embedding_model, 0.3, 0.7)
+            private_lp_rag = _load_private_rag(private_space, "法律法规", case_rag.embedding_model, 0.35, 0.65)
+            private_guidance_rag = _load_private_rag(private_space, "办案规范", case_rag.embedding_model, 0.3, 0.7)
+            private_qa_rag = _load_private_rag(private_space, "业务题库", case_rag.embedding_model, 0.4, 0.6)
+            case_rag = CombinedRAG(case_rag, private_case_rag)
+            lp_rag = CombinedRAG(lp_rag, private_lp_rag)
+            if guidance_rag is not None or private_guidance_rag is not None:
+                guidance_rag = CombinedRAG(guidance_rag, private_guidance_rag)
+            if qa_rag is not None or private_qa_rag is not None:
+                qa_rag = CombinedRAG(qa_rag, private_qa_rag)
     except Exception as e:
         st.error(f"❌ 加载向量库失败：{e}")
         st.stop()
@@ -722,6 +2174,94 @@ def _render_sidebar_doc(case_rag):
         _render_case_reference_details(case_rag, pid)
 
 
+def render_knowledge_upload_page():
+    st.title("上传知识库")
+    st.caption("上传文件后会自动写入对应知识库并增量更新向量索引。扫描版 PDF 建议先用 OCR 脚本处理后再入库。")
+
+    top_left, top_right = st.columns([1, 5])
+    with top_left:
+        if st.button("返回对话", key="back_to_chat_from_kb", use_container_width=True):
+            st.session_state.current_page = "chat"
+            st.rerun()
+    with top_right:
+        if st.button("查看知识库", key="go_to_kb_view_from_upload", use_container_width=True):
+            st.session_state.current_page = "knowledge_view"
+            st.rerun()
+
+    st.divider()
+    scope = st.radio(
+        "上传到",
+        options=["公共知识库", "私有知识库"],
+        horizontal=True,
+        key="upload_scope",
+    )
+
+    private_space = ""
+    if scope == "私有知识库":
+        spaces = list_private_spaces()
+        options = ["新建私有知识库"] + spaces
+        selected = st.selectbox("选择私有知识库", options=options, key="upload_private_space_select")
+        if selected == "新建私有知识库":
+            private_space = st.text_input(
+                "私有知识库名称",
+                placeholder="例如：第一监督室知识库",
+                key="upload_private_space_new",
+            )
+        else:
+            private_space = selected
+        if private_space:
+            st.info(f"本次上传将写入私有知识库：{_safe_space_name(private_space)}")
+
+    knowledge_type = st.selectbox(
+        "知识库类型",
+        options=list(KNOWLEDGE_TYPE_CONFIG.keys()),
+        key="upload_knowledge_type",
+    )
+
+    help_text = {
+        "法律法规": "支持上传单部法规原文 Word/PDF/TXT。系统会自动按“第X条”拆成一行一条，格式特别乱时会尝试调用当前模型重构；建议不要把多部法规混在同一个文件里。",
+        "案例": "支持 Word/PDF/TXT/JSON/XLSX。Excel 会按“首行为表头、每行一个案例”入库，并自动识别案件事实、处理结果、依据等常见列名。",
+        "办案规范": "支持 PDF、DOC/DOCX、TXT、XLSX。扫描版 PDF 如抽取效果差，请先运行 OCR 预处理。",
+        "业务题库": "支持编号 DOCX 配对：1.docx 为题目，1.1.docx 为答案；也支持包含 question/answer 的 JSON。",
+    }[knowledge_type]
+    st.info(help_text)
+
+    allowed_types = {
+        "法律法规": ["txt", "doc", "docx", "pdf"],
+        "案例": ["txt", "doc", "docx", "pdf", "json", "xlsx", "xlsm"],
+        "办案规范": ["pdf", "doc", "docx", "txt", "xlsx"],
+        "业务题库": ["docx", "json", "txt", "doc", "pdf"],
+    }[knowledge_type]
+    uploaded_files = st.file_uploader(
+        "选择文件",
+        type=allowed_types,
+        accept_multiple_files=True,
+        key=f"kb_upload_{knowledge_type}",
+    )
+
+    if uploaded_files:
+        st.write("待上传文件：")
+        for item in uploaded_files:
+            st.caption(f"- {item.name} ({item.size / 1024:.1f} KB)")
+
+    disabled = not uploaded_files or (scope == "私有知识库" and not _safe_space_name(private_space))
+    if st.button("上传并更新知识库", type="primary", disabled=disabled, key="upload_ingest_btn"):
+        try:
+            with st.spinner("正在保存文件、分片并更新索引，请稍候..."):
+                result = ingest_uploaded_files(scope, private_space, knowledge_type, uploaded_files)
+            st.success(
+                f"入库完成：文件 {result['files']} 个，新增/处理文本块 {result['chunks']} 个。"
+            )
+            st.caption(f"索引目录：{result['index']}")
+            if scope == "私有知识库":
+                st.session_state.private_kb_scope = _safe_space_name(private_space)
+            st.info("索引已刷新，新对话或刷新页面后会使用最新知识库。")
+        except Exception as e:
+            st.error(f"入库失败：{e}")
+            with st.expander("查看错误详情"):
+                st.code(traceback.format_exc())
+
+
 # ======================
 # 主页面
 # ======================
@@ -736,6 +2276,41 @@ def chat_page():
     with st.sidebar:
         st.title("纪检监察业务助手")
         st.caption(f"👤 当前用户：{username}")
+        col_upload, col_view = st.columns(2)
+        with col_upload:
+            if st.button("上传知识库", key="open_kb_upload", use_container_width=True):
+                st.session_state.current_page = "knowledge_upload"
+                st.rerun()
+        with col_view:
+            if st.button("查看知识库", key="open_kb_view", use_container_width=True):
+                st.session_state.current_page = "knowledge_view"
+                st.rerun()
+        if st.button("返回对话", key="open_chat_page", use_container_width=True):
+            st.session_state.current_page = "chat"
+            st.rerun()
+        st.divider()
+
+        st.subheader("知识库范围")
+        private_spaces = list_private_spaces()
+        active_options = ["仅公共知识库"] + private_spaces
+        current_scope = st.session_state.get("private_kb_scope", "")
+        default_scope_label = current_scope if current_scope in private_spaces else "仅公共知识库"
+        selected_scope_label = st.selectbox(
+            "私有知识库",
+            options=active_options,
+            index=active_options.index(default_scope_label),
+            key="active_private_kb_select",
+            help="选择后，检索时会同时使用公共知识库和该私有知识库。",
+        )
+        selected_private_scope = "" if selected_scope_label == "仅公共知识库" else selected_scope_label
+        if st.session_state.get("private_kb_scope", "") != selected_private_scope:
+            st.session_state.private_kb_scope = selected_private_scope
+            load_global_agent.clear()
+            st.rerun()
+        if selected_private_scope:
+            st.caption(f"当前检索：公共 + {selected_private_scope}")
+        else:
+            st.caption("当前检索：仅公共知识库")
         st.divider()
         
         # 1. 新建对话功能区
@@ -827,8 +2402,8 @@ def chat_page():
         # 定义可用模型列表 (名称 -> 配置字典)
         MODEL_CONFIGS = {
             "DeepSeek-V3": {
-                "id": "deepseek-chat", 
-                "base_url": "https://api.deepseek.com/v1", 
+                "id": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
                 "api_key_env": "DEEPSEEK_API_KEY"
             },
             "通义千问3.5-Plus": {
@@ -872,8 +2447,15 @@ def chat_page():
 
 
 
+    if st.session_state.get("current_page") == "knowledge_upload":
+        render_knowledge_upload_page()
+        return
+    if st.session_state.get("current_page") == "knowledge_view":
+        render_knowledge_view_page()
+        return
+
     # 1. 获取全局 Agent
-    agent_graph = load_global_agent()
+    agent_graph = load_global_agent(st.session_state.get("private_kb_scope", ""))
     
 
     # ======================
@@ -928,8 +2510,8 @@ def chat_page():
                             saved_comment=saved_comment,
                         )
 
-        # 用户输入
-        user_input = st.chat_input("请输入问题...")
+        # 用户输入。使用原生 chat_input 保持底部定位，按钮样式由 CSS 兼容旧 Chrome。
+        user_input = _render_chat_input_form(f"chat_input_{current_chat_id}")
         if user_input and user_input.strip():
             if len(user_input) > 15000:
                 st.error("❌ 问题太长，请限制在 15000 字符以内")
@@ -1084,31 +2666,34 @@ def chat_page():
                                     full_response += chunk
                                 stream_placeholder.markdown(full_response + " ▌")
 
-                            # 阶段 2：流式完成后，清除占位符，渲染内嵌引用按钮
+                            # 阶段 2：流式完成后，清除状态框内的占位符。
+                            # 最终回答必须渲染在 status 外部，否则 status 收起时正文也会被折叠。
                             stream_placeholder.empty()
-                            ref_map = result_meta.get('ref_map', {})
-                            case_rag = getattr(agent_graph, 'case_rag', None)
-                            if ref_map and full_response and "❌" not in str(full_response):
-                                # 持久化到 session_state，确保按钮在后续 rerun 中仍然渲染
-                                st.session_state[f'_inline_{current_chat_id}'] = {
-                                    'text': full_response,
-                                    'ref_map': ref_map
-                                }
-                                _render_response_with_inline_refs(
-                                    full_response,
-                                    ref_map,
-                                    case_rag,
-                                    reference_scope=f"chat_{current_chat_id}",
-                                )
-                            else:
-                                # 无引用时清除旧数据
-                                st.session_state.pop(f'_inline_{current_chat_id}', None)
-                                st.markdown(full_response)
 
                             if full_response and "❌" not in str(full_response):
-                                status.update(label="✅ 回答生成完毕", state="complete", expanded=True)
+                                status.update(label="回答生成完毕", state="complete", expanded=False)
                             elif full_response and "❌" in str(full_response):
-                                status.update(label="❌ 生成失败", state="error",expanded=True)
+                                status.update(label="生成失败", state="error", expanded=False)
+
+                        # 阶段 3：在 status 外部渲染最终回答，避免回答内容随状态框折叠。
+                        ref_map = result_meta.get('ref_map', {})
+                        case_rag = getattr(agent_graph, 'case_rag', None)
+                        if ref_map and full_response and "❌" not in str(full_response):
+                            # 持久化到 session_state，确保按钮在后续 rerun 中仍然渲染
+                            st.session_state[f'_inline_{current_chat_id}'] = {
+                                'text': full_response,
+                                'ref_map': ref_map
+                            }
+                            _render_response_with_inline_refs(
+                                full_response,
+                                ref_map,
+                                case_rag,
+                                reference_scope=f"chat_{current_chat_id}",
+                            )
+                        else:
+                            # 无引用时清除旧数据
+                            st.session_state.pop(f'_inline_{current_chat_id}', None)
+                            st.markdown(full_response)
 
                     # 保存 AI 回复 (保持原有逻辑)
                     if full_response and "❌" not in str(full_response):
@@ -1157,7 +2742,7 @@ def chat_page():
         
         👈 **请在左侧侧边栏选择一个对话或创建新对话开始使用！**
         """)
-        st.chat_input("请输入问题...", disabled=True)
+        _render_chat_input_form("chat_input_disabled", disabled=True)
 
 def main():
     """应用入口，包裹全局 try/except 捕获所有未处理异常并写入 crash.log。"""

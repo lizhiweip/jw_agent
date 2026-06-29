@@ -2,6 +2,7 @@
 # 🚀 核心应用框架 (Streamlit + DB)
 # ============================================================
 streamlit
+streamlit-cookies-controller==0.0.4
 Werkzeug==3.1.3
 sqlalchemy==2.0.31
 python-dotenv==1.0.1

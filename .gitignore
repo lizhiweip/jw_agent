@@ -353,6 +353,9 @@ knowledge_base_qa/*
 !knowledge_base_lp/.gitkeep
 !knowledge_base_guidance/.gitkeep
 !knowledge_base_qa/.gitkeep
+private_knowledge_bases/
+private_law_faiss/
+data/uploads/
 
 # Dedicated local OCR environment
 .ocr_env/
