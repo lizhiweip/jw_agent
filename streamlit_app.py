@@ -458,9 +458,19 @@ def _save_uploaded_files(uploaded_files, target_dir: Path) -> list[Path]:
 
 
 def _ocr_python_executable() -> Path | None:
+    try:
+        import paddleocr  # noqa: F401
+        import fitz  # noqa: F401
+
+        return Path(sys.executable)
+    except Exception:
+        pass
+
     candidates = [
-        Path(os.getcwd()) / ".ocr_env" / "python.exe",
+        Path(os.getcwd()) / ".ocr_env" / "bin" / "python",
+        Path(os.getcwd()) / ".ocr_env" / "bin" / "python3",
         Path(os.getcwd()) / ".ocr_env" / "Scripts" / "python.exe",
+        Path(os.getcwd()) / ".ocr_env" / "python.exe",
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -495,7 +505,7 @@ def _build_guidance_records_with_ocr(file_path: Path, records_dir: Path) -> list
     ocr_python = _ocr_python_executable()
     if not ocr_python:
         raise RuntimeError(
-            "该 PDF 可能是扫描版，当前主环境无法直接抽取文字；未找到 .ocr_env/python.exe，无法自动 OCR。"
+            "该 PDF 可能是扫描版，当前环境无法直接抽取文字，且当前 Python 未检测到 paddleocr/pymupdf；也未找到 .ocr_env/bin/python 或 .ocr_env/Scripts/python.exe，无法自动 OCR。"
         )
 
     output_root = records_dir.parent
